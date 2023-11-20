@@ -1,13 +1,12 @@
 <?php
 
-class HttpException extends \Exception {}
-
 abstract class Model
 {
     abstract public function getCreatedAt(): string;
 }
 
-class User extends Model {
+class User extends Model
+{
     private $db;
 
     public $id;
@@ -15,21 +14,8 @@ class User extends Model {
     public $email;
     public $role;
 
-    public function __construct($db) {
-        $this->db = $db;
-    }
-
-    public function saveToDatabase() {
-        $query = "INSERT INTO users (id, username, email, role) VALUES (" . $this->id . ", " . $this->username . ", " . $this->email . ", " . $this->role . ")";
-        $result = $this->db->query($query);
-
-        if ($result) {
-            $this->log("User with ID {$this->id} has been saved to the database.");
-            return true;
-        } else {
-            $this->log("Failed to save user with ID {$this->id} to the database.");
-            return false;
-        }
+    public function __construct() {
+        $this->db = new mysqli('localhost', 'username', 'password', 'database');
     }
 
     public function getCreatedAt(): string
@@ -37,9 +23,7 @@ class User extends Model {
         throw new \Exception('Not supported');
     }
 
-    private function log($message) {
-        file_put_contents('log.txt', $message . PHP_EOL, FILE_APPEND);
-    }
+    // ...
 }
 
 class Post
@@ -48,50 +32,95 @@ class Post
 
     public $id;
     public $text;
+    public $type;
     public $created_at;
 
-    public function __construct($db) {
-        $this->db = $db;
+    public function __construct()
+    {
+        $this->db = new mysqli('localhost', 'username', 'password', 'database');
     }
 
-    public function searchForPostsInDbByLimitAndOffset($limit, $offset): ?array
+    public function savePost()
     {
-        $query = "SELECT * FROM posts LIMIT $limit OFFSET $offset";
+        $query = "INSERT INTO posts (text, created_at) VALUES (" . $this->text . ", " . $this->type . ", " . $this->created_at . ")";
         $result = $this->db->query($query);
 
-        if (!$result->getResult()) {
-            return null;
+        if ($result) {
+            $this->log("Post has been saved to the database.");
+            return true;
+        } else {
+            $this->log("Failed to save post to the database.");
+            http_response_code(500);
+            exit;
         }
+    }
 
-        return $result->getResult();
+    private function log($message) {
+        file_put_contents('log.txt', $message . PHP_EOL, FILE_APPEND);
     }
 
     public  function getCreatedAt(): string
     {
         return $this->created_at;
     }
+
+    // ...
 }
 
-class GetPostsController
+/**
+ * @method User getUser
+ */
+class CreatePostController
 {
     public function __invoke()
     {
-        /** @var User $user */
         $user = $this->getUser();
         if ($user->role !== 10) {
             echo json_encode(['message' => 'no access']);
             exit;
         }
 
-        $limit = $_GET['limit'];
-        $offset = $_GET['offset'];
-        if ($offset < 0) {
-            throw new \Exception();
+        $post = new Post();
+        $post->created_at = time();
+        $post->text = $_POST['text'];
+        $post->type = $_POST['type'];
+
+        if ($post->savePost()) {
+            $redisService = new RedisService();
+            $redisService->addToEmailQueue($post);
+
+            http_response_code(200);
+            exit;
         }
+    }
+}
 
-        $db = new mysqli('localhost', 'username', 'password', 'database');
-        $post = new Post($db);
+class RedisService
+{
+    public $redisQueue;
 
-        return json_encode($post->searchForPostsInDbByLimitAndOffset($limit, $offset));
+    public function __construct()
+    {
+        $redis = new Redis();
+        $redis->connect('127.0.0.1');
+
+        $this->redisQueue = new RSMQClient($redis);
+    }
+
+    public function addToEmailQueue(Post $post)
+    {
+        if ($post->type === 'blog_post') {
+            $this->redisQueue->sendMessage('blog_email_queue', json_encode([
+                'text' => $post->text,
+                'type' => $post->type,
+                'created_at' => $post->created_at
+            ]));
+        } elseif ($post->type === 'personal_post') {
+            $this->redisQueue->sendMessage('personal_email_queue', json_encode([
+                'text' => $post->text,
+                'type' => $post->type,
+                'created_at' => $post->created_at
+            ]));
+        }
     }
 }
