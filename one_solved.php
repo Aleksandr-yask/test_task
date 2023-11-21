@@ -121,6 +121,9 @@ interface PostRepositoryInterface
     public function createPost(Post $post): void;
 }
 
+/**
+ * Репозитории лучше использовать через интерфейсы, это снизит завязку на конкретную реализацию базы данных
+ */
 class PostRepository implements PostRepositoryInterface
 {
     public function __construct(
@@ -155,64 +158,96 @@ class PostRepository implements PostRepositoryInterface
  */
 class CreatePostController
 {
-    public function __invoke()
+    public function __construct(
+        readonly private PostCreator $creator,
+        readonly private PostService $postService,
+    ) {
+    }
+
+    public function __invoke(HttpRequest $request)
     {
-        $user = $this->getUser();
-        if ($user->role !== 10) {
-            echo json_encode(['message' => 'no access']);
-            exit;
-        }
+        $this->postService->savePost(
+            $this->creator->createPostByRequest($request)
+        );
 
-        $post = new Post();
-        $post->created_at = time();
-        $post->text = $_POST['text'];
-        $post->type = $_POST['type'];
+        return new Response(null, [], Response::HTTP_CREATED);
+    }
+}
 
-        if ($post->savePost()) {
-            $redisService = new RedisService();
-            $redisService->addToEmailQueue($post);
+enum UserRoles: int
+{
+    case CREATOR = 10;
+    case READER = 9;
+}
 
-            http_response_code(200);
-            exit;
-        }
+/**
+ * Пример реализации проверки на симфоневом вотере
+ */
+class CreatePostVoter
+{
+    protected function voteOnAttribute(string $attribute, mixed $subject, TokenInterface $token): bool
+    {
+        return $token->getUser()->getRole() === UserRoles::CREATOR;
+    }
+}
+
+/**
+ * Реализации могут быть другие, главное что бы вынести логику создания из контроллера
+ */
+class PostCreator
+{
+    public function createPostByRequest(HttpRequest $request): Post
+    {
+        return new Post(
+            $request->getPostFields()['text'],
+            $request->getPostFields()['type'],
+        );
     }
 }
 
 class PostService
 {
     public function __construct(
-        private PostRepositoryInterface $postRepository,
-    )
+        readonly private PostRepositoryInterface $postRepository,
+        readonly private MailerInterface $mailer,
+    ) {
+    }
+
+    public function savePost(Post $post)
     {
+        $this->postRepository->createPost($post);
+        $this->mailer->send($post);
     }
 }
 
-class RedisService
+interface MailerInterface
 {
-    public $redisQueue;
+    public function send(mixed $object): void;
+    public function support(mixed $object): bool;
+}
 
-    public function __construct()
+class BlogPostAsyncMailer implements MailerInterface
+{
+    private const QUEUE_NAME = 'blog_email_queue';
+
+    public function __construct(readonly private QueueInterface $queue)
     {
-        $redis = new Redis();
-        $redis->connect('127.0.0.1');
-
-        $this->redisQueue = new RSMQClient($redis);
     }
 
-    public function addToEmailQueue(Post $post)
+    /**
+     * @param Post $object
+     */
+    public function send(mixed $object): void
     {
-        if ($post->type === 'blog_post') {
-            $this->redisQueue->sendMessage('blog_email_queue', json_encode([
-                'text' => $post->text,
-                'type' => $post->type,
-                'created_at' => $post->created_at
-            ]));
-        } elseif ($post->type === 'personal_post') {
-            $this->redisQueue->sendMessage('personal_email_queue', json_encode([
-                'text' => $post->text,
-                'type' => $post->type,
-                'created_at' => $post->created_at
-            ]));
-        }
+        $this->queue->sendMessage(self::QUEUE_NAME, json_encode([
+            'text' => $object->getText(),
+            'type' => $object->getType(),
+            'created_at' => $object->getCreatedAt(),
+        ]));
+    }
+
+    public function support(mixed $object): bool
+    {
+        return $object instanceof Post;
     }
 }
