@@ -38,7 +38,7 @@ class User extends Model
     // ...
 }
 
-class Post
+class Post extends Model
 {
     private $db;
 
@@ -54,7 +54,7 @@ class Post
 
     public function savePost()
     {
-        $query = "INSERT INTO posts (text, created_at) VALUES (" . $this->text . ", " . $this->type . ", " . $this->created_at . ")";
+        $query = "INSERT INTO posts (text, created_at) VALUES (" . $this->text . ", " . $this->created_at . ")";
         $result = $this->db->query($query);
 
         if ($result) {
